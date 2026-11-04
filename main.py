@@ -1,4 +1,4 @@
-# main.py — 급식 규칙 찾기: 같은 날 함께 나온 메뉴 쌍을 센다
+
 import re
 from collections import Counter
 from itertools import combinations
