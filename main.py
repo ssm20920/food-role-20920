@@ -1,212 +1,130 @@
 import re
-from collections import Counter
+from collections import Counter, defaultdict
 from itertools import combinations
 import pandas as pd
 import plotly.express as px
+import requests
 import streamlit as st
 
-# 페이지 기본 설정
 st.set_page_config(page_title="급식 규칙 찾기", layout="wide")
-st.title("🍽️ 급식 연관 규칙 분석기")
-
-# 데이터 로드 주소
-DATA_URL = "https://raw.githubusercontent.com/it-teacher-go/data-share-/main/songtan_meals_184.csv"
 
 
+# 데이터 로드 및 전처리
 @st.cache_data
 def load_and_process_data():
-    # CSV 로드
-    df = pd.read_csv(DATA_URL, encoding="utf-8")
+    url = "https://raw.githubusercontent.com/it-teacher-go/data-share-/main/songtan_meals_184.csv"
+    df = pd.read_csv(url, encoding="utf-8")
 
-    baskets = []
-    all_items = set()
+    transactions = []
+    all_menus = set()
 
-    for menu_str in df["메뉴"].dropna():
-        if not isinstance(menu_str, str):
-            continue
-
-        # 세로줄(|) 구분자로 메뉴 분리
-        raw_items = menu_str.split("|")
-        cleaned_items = set()
-
-        for item in raw_items:
-            # 괄호 및 괄호 내부 텍스트 제거 + 양끝 공백 제거
+    for raw_menu in df["메뉴"].dropna():
+        # 세로줄(|)로 메뉴 분리
+        items = raw_menu.split("|")
+        cleaned_items = []
+        for item in items:
+            # 괄호 및 괄호 안 내용 제거 및 공백 정리
             cleaned = re.sub(r"\(.*?\)", "", item).strip()
             if cleaned:
-                cleaned_items.add(cleaned)
-                all_items.add(cleaned)
+                cleaned_items.append(cleaned)
 
-        if cleaned_items:
-            baskets.append(cleaned_items)
+        # 하루 식단 내 중복 메뉴 제거
+        unique_items = list(set(cleaned_items))
+        if unique_items:
+            transactions.append(unique_items)
+            all_menus.update(unique_items)
 
-    total_baskets = len(baskets)
+    return transactions, sorted(list(all_menus))
 
-    # 1. 개별 메뉴 등장 횟수 계산
+
+# 연관 규칙 계산
+@st.cache_data
+def calculate_rules(transactions):
+    total_tx = len(transactions)
+
     item_counts = Counter()
-    for basket in baskets:
-        for item in basket:
+    pair_counts = defaultdict(int)
+
+    for tx in transactions:
+        for item in tx:
             item_counts[item] += 1
+        for item1, item2 in combinations(tx, 2):
+            pair_counts[tuple(sorted([item1, item2]))] += 1
 
-    # 2. 동시 출현 메뉴 쌍 횟수 계산
-    pair_counts = Counter()
-    for basket in baskets:
-        if len(basket) >= 2:
-            for item1, item2 in combinations(sorted(basket), 2):
-                pair_counts[(item1, item2)] += 1
-
-    # 3. 연관 규칙 계산 (A -> B, B -> A)
-    rules_list = []
+    rules = []
     for (item1, item2), count in pair_counts.items():
-        support = count / total_baskets
+        supp = count / total_tx
 
-        # A -> B 규칙
-        conf_a_b = count / item_counts[item1]
-        lift_a_b = conf_a_b / (item_counts[item2] / total_baskets)
-        rules_list.append({
-            "조건": item1,
-            "결과": item2,
-            "동시": count,
-            "지지도": round(support, 4),
-            "신뢰도": round(conf_a_b, 4),
-            "향상도": round(lift_a_b, 4)
-        })
+        # item1 -> item2
+        conf1 = count / item_counts[item1]
+        lift1 = conf1 / (item_counts[item2] / total_tx)
+        rules.append(
+            {
+                "조건": item1,
+                "결과": item2,
+                "동시": count,
+                "지지도": round(supp, 4),
+                "신뢰도": round(conf1, 4),
+                "향상도": round(lift1, 4),
+            }
+        )
 
-        # B -> A 규칙 (조건-결과 반대)
-        conf_b_a = count / item_counts[item2]
-        lift_b_a = conf_b_a / (item_counts[item1] / total_baskets)
-        rules_list.append({
-            "조건": item2,
-            "결과": item1,
-            "동시": count,
-            "지지도": round(support, 4),
-            "신뢰도": round(conf_b_a, 4),
-            "향상도": round(lift_b_a, 4)
-        })
+        # item2 -> item1
+        conf2 = count / item_counts[item2]
+        lift2 = conf2 / (item_counts[item1] / total_tx)
+        rules.append(
+            {
+                "조건": item2,
+                "결과": item1,
+                "동시": count,
+                "지지도": round(supp, 4),
+                "신뢰도": round(conf2, 4),
+                "향상도": round(lift2, 4),
+            }
+        )
 
-    rules_df = pd.DataFrame(rules_list)
+    rules_df = pd.DataFrame(rules)
+    unique_pairs_count = len(pair_counts)
 
-    return (
-        total_baskets,
-        len(all_items),
-        len(pair_counts),
-        rules_df,
-        sorted(list(all_items)),
-        item_counts,
-        pair_counts
-    )
+    return rules_df, total_tx, len(item_counts), unique_pairs_count
 
 
-# 데이터 파싱 수행
-total_days, total_menu_types, total_pairs, rules_df, all_menu_list, item_counts, pair_counts = load_and_process_data()
+# 앱 실행
+st.title("🍚 송탄고 급식 메뉴 연관 규칙 분석")
 
-# 요약 정보 표시
-st.markdown(
-    f"**급식 일수:** {total_days}일 &nbsp;|&nbsp; **메뉴 종류 수:** {total_menu_types}개 &nbsp;|&nbsp; **함께 나온 메뉴 쌍 수:** {total_pairs}쌍"
+transactions, all_menus = load_and_process_data()
+rules_df, total_days, total_menu_types, unique_pairs_count = calculate_rules(
+    transactions
 )
-st.write("---")
 
-# 컨트롤바 영역 (필터링, 슬라이더, 정렬)
-col1, col2, col3 = st.columns([2, 1, 1])
+# 주요 지표 출력 (한 줄 표시)
+st.markdown(
+    f"**급식 일수:** {total_days}일 | **메뉴 종류 수:** {total_menu_types}개 | **함께 나온 적이 있는 메뉴 쌍의 수:** {unique_pairs_count}개"
+)
+st.divider()
+
+# 사이드바 / 컨트롤 옵션
+col1, col2 = st.columns([1, 1])
 
 with col1:
     selected_menu = st.selectbox(
-        "메뉴 선택 (전체 보기 또는 특정 메뉴 포함 규칙 필터링):",
-        ["전체"] + all_menu_list,
+        "특정 메뉴 선택 (전체 보기: '전체')", ["전체"] + all_menus
     )
 
 with col2:
-    min_cooccurrence = st.slider(
-        "최소 동시 일수:", min_value=1, max_value=10, value=1
+    sort_by = st.selectbox(
+        "정렬 기준 선택",
+        ["향상도", "신뢰도", "동시"],
+        index=0,
     )
 
-with col3:
-    sort_by = st.selectbox("정렬 기준:", ["향상도", "신뢰도", "동시"])
-
-# 동시 일수 필터링
-filtered_df = rules_df[rules_df["동시"] >= min_cooccurrence].copy()
-
-# 특정 메뉴 선택 필터링
+# 메뉴 필터링
 if selected_menu != "전체":
-    filtered_df = filtered_df[
-        (filtered_df["조건"] == selected_menu) | (filtered_df["결과"] == selected_menu)
-    ]
-
-# 필터링 후 남은 규칙 수 안내 (한 줄 표현식)
-rem_count = len(filtered_df)
-st.info(f"💡 현재 조건에 맞게 남은 규칙: **{rem_count}개**")
-
-# 정렬
-filtered_df = filtered_df.sort_values(by=sort_by, ascending=False).reset_index(drop=True)
-
-# Plotly 가로 막대그래프 (향상도 Top 10)
-st.subheader("📊 향상도 상위 10개 규칙")
-top10_df = filtered_df.sort_values(by="향상도", ascending=False).head(10).copy()
-
-if not top10_df.empty:
-    top10_df["규칙"] = top10_df["조건"] + " ➔ " + top10_df["결과"]
-    top10_df = top10_df.sort_values(by="향상도", ascending=True)
-
-    fig = px.bar(
-        top10_df,
-        x="향상도",
-        y="규칙",
-        orientation="h",
-        text="향상도",
-        title=f"향상도 Top 10 ({'전체' if selected_menu == '전체' else selected_menu})",
-        labels={"향상도": "향상도 (Lift)", "규칙": "메뉴 규칙 (조건 ➔ 결과)"},
-    )
-    fig.update_traces(texttemplate="%{text:.2f}", textposition="outside")
-    fig.update_layout(height=400)
-    st.plotly_chart(fig, use_container_width=True)
+    filtered_df = rules_df[
+        (rules_df["조건"] == selected_menu) | (rules_df["결과"] == selected_menu)
+    ].copy()
 else:
-    st.warning("선택한 조건에 해당하는 규칙이 없습니다.")
+    filtered_df = rules_df.copy()
 
-# 규칙 데이터표 출력
-st.subheader("📋 연관 규칙 데이터")
-st.dataframe(filtered_df, use_container_width=True)
-
-st.write("---")
-
-# 함께 나온 적 없는 짝 기능
-st.subheader("🚫 함께 나온 적 없는 짝 찾아보기")
-
-target_menu = st.selectbox(
-    "조회할 대상 메뉴를 선택하세요:",
-    all_menu_list,
-    key="unpaired_menu_select",
-)
-
-target_days = item_counts[target_menu]
-
-# 대상 메뉴와 함께 출현한 적 있는 메뉴 집합
-together_menus = set()
-for (item1, item2), count in pair_counts.items():
-    if count > 0:
-        if item1 == target_menu:
-            together_menus.add(item2)
-        elif item2 == target_menu:
-            together_menus.add(item1)
-
-# 한번도 함께 안 나왔고, 혼자서는 10일 이상 제공된 메뉴 추림
-never_together = []
-for menu, count in item_counts.items():
-    if menu != target_menu and menu not in together_menus and count >= 10:
-        never_together.append({"메뉴": menu, "제공 일수": count})
-
-never_df = (
-    pd.DataFrame(never_together)
-    .sort_values(by="제공 일수", ascending=False)
-    .reset_index(drop=True)
-) if never_together else pd.DataFrame()
-
-st.markdown(f"**[{target_menu}]** 메뉴가 나온 날 수: **{target_days}일**")
-
-if not never_df.empty:
-    st.write(
-        f"**[{target_menu}]**와 단 한 번도 함께 나오지 않았지만, **10일 이상 제공된 메뉴 목록**:"
-    )
-    st.dataframe(never_df, use_container_width=True)
-else:
-    st.write(
-        f"**[{target_menu}]**와 함께 나온 적 없으면서 10일 이상 제공된 메뉴가 없습니다."
-    )
+# 정렬 적용
+filtered_df = filtered_
