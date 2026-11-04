@@ -78,31 +78,4 @@ def load_and_process_data():
         lift_b_a = conf_b_a / (item_counts[item1] / total_baskets)
         rules_list.append(
             {
-                "조건": item2,
-                "결과": item1,
-                "동시": count,
-                "지지도": round(support, 4),
-                "신뢰도": round(conf_b_a, 4),
-                "향상도": round(lift_b_a, 4),
-            }
-        )
-
-    rules_df = pd.DataFrame(rules_list)
-
-    return (
-        total_baskets,
-        len(all_items),
-        len(pair_counts),
-        rules_df,
-        sorted(list(all_items)),
-        item_counts,
-        pair_counts,
-    )
-
-
-# 데이터 파싱 수행
-(
-    total_days,
-    total_menu_types,
-    total_pairs,
-    rules_df,
+                "조건":
